@@ -1,4 +1,4 @@
-#![feature(unboxed_closures)]
+#![feature(unboxed_closures, macro_rules)]
 
 extern crate shader_version;
 extern crate event;
@@ -16,6 +16,8 @@ use window::{Window, WindowSettings};
 
 use std::comm::TryRecvError;
 
+use std::os;
+
 pub struct FileDialog {
     title: String,
     dimen: [u32, ..2],
@@ -25,6 +27,16 @@ pub struct FileDialog {
     starting_path: Path,
 }
 
+macro_rules! setter(
+    ($field:ident: $ty:ty -> $ret:ident) => ( 
+        fn $field(mut self, $field: $ty) -> $ret {
+            self.$field = $field;
+            self
+        }
+    );
+)
+
+
 impl FileDialog {
     pub fn with_title<S: StrAllocating>(title: S) -> FileDialog {
         FileDialog {
@@ -33,66 +45,60 @@ impl FileDialog {
             samples: 4,
             background: Color::new(0.9, 0.9, 0.9, 1.0), // Should be a nice light-grey
             select: SelectType::File,
+            starting_path: os::homedir().unwrap_or_else(|| os::getcwd().unwrap()) // Possible panic! here
         }
     }
 
-    pub fn set_width(mut self, width: u32) -> FileDialog {
+    pub fn width(mut self, width: u32) -> FileDialog {
         self.dimen[0] = width;
         self   
     }
 
-    pub fn set_height(mut self, height: u32) -> FileDialog {
+    pub fn height(mut self, height: u32) -> FileDialog {
         self.dimen[1] = height;
         self  
     }
 
-    pub fn set_dimensions(mut self, width: u32, height: u32) -> FileDialog {
+    pub fn dimensions(mut self, width: u32, height: u32) -> FileDialog {
         self.dimen = [width, height];
         self    
     }
 
-    pub fn set_samples(mut self, samples: u8) -> FileDialog {
-        self.samples = samples;
-        self
-    }
+    setter!(samples: u8 -> FileDialog)
+    
+    setter!(background: Color -> FileDialog)
+    
+    setter!(select: SelectType -> FileDialog)
 
-    pub fn set_background(mut self, background: Color) -> FileDialog {
-        self.background = background;
-        self  
-    }
-
-    pub fn set_select(mut self, select: SelectType) -> FileDialog {
-        self.select = select;
-        self    
-    }
-
-    pub fn set_starting_path(mut self, path: Path) -> 
+    setter!(starting_path: Path -> FileDialog) 
     
     // How should we format the trait bounds here?
     /// Show the dialog
-    pub fn show<W: Window, F: FnOnce(OpenGl, WindowSettings) -> W, WinFn: F + 'static>
-    (self, win_fn: WinFn) -> FilePromise {
-        let background = self.background;
-        let select = self.select;
-        let starting_path = self.starting_path;
-
-        let settings = WindowSettings {
-            title: self.title,
-            size: self.dimen,
-            samples: self.samples,
-            fullscreen: false,
-            exit_on_esc: true    
-        };
-        
+    pub fn show<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W + Send>
+    (self, win_fn: F) -> FilePromise {
+        let (dialog, window_settings) = self.explode();        
         let (promise, tx) = FilePromise::new();
-        
-                                    
+
+        spawn(proc() render_file_dialog(dialog, win_fn, tx));
+         
+        promise                            
     }
 
     fn explode(self) -> (DialogSettings, WindowSettings) {
         (
             DialogSettings {
-                background: self.background,    
+                background: self.background,
+                select: self.select,
+                starting_path: self.starting_path,
+            },
+            WindowSettings {
+                title: self.title,
+                size: self.dimen,
+                samples: self.samples,
+                fullscreen: false,
+                exit_on_esc: true,
+            }
+        )    
     }
 }
 
@@ -113,8 +119,9 @@ struct DialogSettings {
     starting_path: Path,   
 }
 
-fn render_file_dialog<W: Window>(background: Background, tx: Sender<Path>) {
-        
+fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
+(settings: DialogSettings, win_fn: F, tx: Sender<Path>) {
+    unimplemented!();        
 }
 
 pub struct FilePromise {
@@ -123,11 +130,11 @@ pub struct FilePromise {
 }
 
 impl FilePromise {
-    pub fn new() -> (Promise<Path>, Sender<Path>) {
+    pub fn new() -> (FilePromise, Sender<Path>) {
         let (tx, rx) = channel();
 
         (
-            Promise {
+            FilePromise {
                 opt: None,
                 rx: rx,
             }, 
