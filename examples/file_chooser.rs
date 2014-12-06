@@ -8,11 +8,13 @@ use glfw_window::GlfwWindow;
 use opengl_graphics::glyph_cache::GlyphCache as Font;
 use shader_version::opengl::OpenGL;
 
+use std::io::fs::PathExtensions;
+
 fn main() {
     let font = Font::new(&Path::new("./assets/Dense-Regular.otf")).unwrap(); 
 
     let promise = FileDialog::new("File Dialog Test", font)
         .show(GlfwWindow::new, OpenGL::OpenGL_3_2);
        
-    promise.unwrap(); 
+    println!("Selected file: {}", promise.unwrap().display()); 
 }
