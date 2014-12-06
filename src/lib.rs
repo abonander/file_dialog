@@ -16,6 +16,9 @@ use window::{Window, WindowSettings};
 
 use std::comm::TryRecvError;
 
+use std::io::fs::{mod, PathExtensions};
+use std::io::IoResult;
+
 use std::os;
 
 pub struct FileDialog {
@@ -45,7 +48,8 @@ impl FileDialog {
             samples: 4,
             background: Color::new(0.9, 0.9, 0.9, 1.0), // Should be a nice light-grey
             select: SelectType::File,
-            starting_path: os::homedir().unwrap_or_else(|| os::getcwd().unwrap()) // Possible panic! here
+            // Possible panic! here, but unlikely.
+            starting_path: os::homedir().unwrap_or_else(|| os::getcwd().unwrap())
         }
     }
 
@@ -122,6 +126,18 @@ struct DialogSettings {
 fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
 (settings: DialogSettings, win_fn: F, tx: Sender<Path>) {
     unimplemented!();        
+}
+
+fn list_folders(path: &Path) -> IoResult<Vec<Path>> {
+    let mut entries = try!(fs::readdir(path));
+    entries.retain(PathExtensions::is_dir);    
+    Ok(entries)
+} 
+
+fn list_files(path: &Path) -> IoResult<Vec<Path>> {
+    let mut entries = try!(fs::readdir(path));
+    entries.retain(|file| !file.is_dir());
+    Ok(entries)
 }
 
 pub struct FilePromise {
