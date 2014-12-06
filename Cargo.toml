@@ -1,0 +1,11 @@
+[package]
+
+name = "file_dialog"
+version = "0.0.1"
+authors = ["Austin Bonander <austin.bonander@gmail.com>"]
+
+[dependencies.conrod]
+git = "https://github.com/PistonDevelopers/conrod"
+
+[dependencies.glfw_window]
+git = "https://github.com/PistonDevelopers/glfw_window"
