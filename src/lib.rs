@@ -34,8 +34,6 @@ use std::os;
 
 use std::cell::Cell;
 
-
-
 pub struct FileDialog {
     title: String,
     dimen: [u32, ..2],
@@ -251,6 +249,7 @@ impl DialogState {
 
         let count = self.paths.len();
         self.pages = count / PER_PAGE;
+        self.cur_page = 1;
 
         if count % PER_PAGE != 0 { self.pages += 1; }
     }
@@ -280,28 +279,33 @@ impl DialogState {
 const COLS: uint = 5;
 const ROWS: uint = 8;
 const PER_PAGE: uint = COLS * ROWS;
+const CHAR_LIMIT: uint = 24;
 
 fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf: &mut Buffers) {
     uic.background().color(state.background).draw(gl);
-
-    if state.dir_changed {
-        buf.dir.clear();
-    }
-
-    if buf.dir.is_empty() {
-        state.dir.as_str().map(|s| buf.dir.push_str(s));
-    }
-
-    thread_local!(static CUR_PAGE: Cell<uint> = Cell::new(1))
 
     CUR_PAGE.with(|cur_page| {
         let page = cur_page.get();
         if page != state.cur_page { 
             state.cur_page = page;
-            buf.set_page(page, state.pages);
+            buf.set_page(state.cur_page, state.pages);
         }
     });
-          
+
+    if state.dir_changed {
+        buf.dir.clear();
+        buf.set_page(state.cur_page, state.pages);
+        state.dir_changed = false;
+    }
+
+    if buf.dir.is_empty() {
+        state.dir.as_str().map(|s| buf.dir.push_str(s));
+        buf.set_page(state.cur_page, state.pages);
+    }
+
+    thread_local!(static CUR_PAGE: Cell<uint> = Cell::new(1))
+
+              
     const BUTTON_ID: u64 = 78;
     
     uic.button(BUTTON_ID)
@@ -315,12 +319,11 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
         .position(5.0, 5.0)
         .size(24)
         .draw(gl);
-    
  
     const PREV_PAGE: u64 = 199;
         
     uic.button(PREV_PAGE)
-        .position(30.0, 445.0)
+        .position(5.0, 445.0)
         .dimensions(90.0, 30.0)
         .label("Previous")
         .callback(|| CUR_PAGE.with(|cur_page| {
@@ -340,7 +343,7 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
         .draw(gl);
 
     uic.label(&*buf.page)
-        .right_from(PREV_PAGE, 30.0)
+        .right_from(PREV_PAGE, 15.0)
         .size(24)
         .draw(gl);   
         
@@ -349,24 +352,25 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
         .position(5.0, 35.0)
         .dimensions(600.0, 400.0)
         .cell_padding(5.0, 5.0)
-        .each_widget(|uic, num, _, _, pt, dimen| {
-            let idx = (state.cur_page - 1) * PER_PAGE + num;
+        .each_widget(|uic, _, x, y, pt, dimen| {
+            use std::cmp;
+            let idx = y * COLS + x;
     
             if idx >= state.paths.len() { return; }
 
             let label = state.paths[idx].filename_str().unwrap().into_string();
 
-            let button = uic.button(FILE_START_ID + num as u64)
+            let button = uic.button(FILE_START_ID + idx as u64)
                 .point(pt)
                 .dimensions(dimen[0], dimen[1]) 
-                .label(&*label).label_font_size(18);
+                .label(label.slice_to(cmp::min(label.len(), CHAR_LIMIT))).label_font_size(18);
 
-                if state.selected == Some(num) {
+                if state.selected == Some(idx) {
                     button.color(Color::new(0.5, 0.9, 0.5, 1.0))
                 } else { button }
-                .callback(|| state.select(num))
+                .callback(|| state.select(idx))
                 .draw(gl);                
-        });        
+        });      
 }
 
 fn entries(path: &Path, keep_files: bool, filter_hidden: bool) -> IoResult<Vec<Path>> {
