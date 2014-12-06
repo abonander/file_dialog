@@ -32,7 +32,9 @@ use std::io::IoResult;
 
 use std::os;
 
-use std::cell::RefCell;
+use std::cell::Cell;
+
+
 
 pub struct FileDialog {
     title: String,
@@ -167,8 +169,9 @@ impl DialogSettings {
                 select: self.select,
                 dir_changed: false,
                 pages: 0,
+                cur_page: 0,
                 tx: self.tx,
-                sent: false,
+                exit: false,
                 filter_hidden: self.filter_hidden,
             },
             self.font,
@@ -191,7 +194,7 @@ fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
     let ref mut buf = Default::default();
 
     for event in event_loop {
-        if state.sent { return; }
+        if state.exit { break; }
 
         uic.handle_event(&event);
         match event {
@@ -207,7 +210,14 @@ fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
 
 #[deriving(Default)]
 struct Buffers {
-    dir: String,    
+    dir: String,
+    page: String,   
+}
+
+impl Buffers {
+    fn set_page(&mut self, page: uint, total: uint) {
+        self.page = format!("Page: {} Total: {}", page, total);    
+    }    
 }
 
 struct DialogState {
@@ -218,8 +228,9 @@ struct DialogState {
     select: SelectType,
     dir_changed: bool,
     pages: uint,
+    cur_page: uint,
     tx: Sender<Path>,
-    sent: bool,
+    exit: bool,
     filter_hidden: bool,
 }
 
@@ -239,10 +250,9 @@ impl DialogState {
         self.paths = entries(&self.dir, self.select.show_files(), self.filter_hidden).unwrap();
 
         let count = self.paths.len();
-        let per_page = COLS * ROWS;
-        self.pages = count / per_page;
+        self.pages = count / PER_PAGE;
 
-        if count % per_page != 0 { self.pages += 1; }
+        if count % PER_PAGE != 0 { self.pages += 1; }
     }
 
     fn up_dir(&mut self) {
@@ -257,7 +267,7 @@ impl DialogState {
             
             if self.select.show_files() && !path.is_dir() {
                 self.tx.send(path);
-                self.sent = true;    
+                self.exit = true;    
             } else {
                 self.update_dir(path);
             }            
@@ -268,7 +278,8 @@ impl DialogState {
 }
 
 const COLS: uint = 5;
-const ROWS: uint = 10;
+const ROWS: uint = 8;
+const PER_PAGE: uint = COLS * ROWS;
 
 fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf: &mut Buffers) {
     uic.background().color(state.background).draw(gl);
@@ -279,15 +290,23 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
 
     if buf.dir.is_empty() {
         state.dir.as_str().map(|s| buf.dir.push_str(s));
-    }   
-        
-    let text_id = 42u64;
+    }
 
+    thread_local!(static CUR_PAGE: Cell<uint> = Cell::new(1))
+
+    CUR_PAGE.with(|cur_page| {
+        let page = cur_page.get();
+        if page != state.cur_page { 
+            state.cur_page = page;
+            buf.set_page(page, state.pages);
+        }
+    });
+          
     const BUTTON_ID: u64 = 78;
     
     uic.button(BUTTON_ID)
-        .dimensions(30.0, 30.0)
         .position(605.0, 5.0)
+        .dimensions(30.0, 30.0)
         .label("Up")
         .callback(|| state.up_dir())
         .draw(gl);
@@ -297,28 +316,57 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
         .size(24)
         .draw(gl);
     
-    let base_id = 96u64;
+ 
+    const PREV_PAGE: u64 = 199;
+        
+    uic.button(PREV_PAGE)
+        .position(30.0, 445.0)
+        .dimensions(90.0, 30.0)
+        .label("Previous")
+        .callback(|| CUR_PAGE.with(|cur_page| {
+            let page = cur_page.get();
+            if page > 1 { cur_page.set(page - 1); }
+        }))
+        .draw(gl);
 
+    uic.button(PREV_PAGE + 1)
+        .right_from(PREV_PAGE, 125.0)
+        .dimensions(90.0, 30.0)
+        .label("Next")
+        .callback(|| CUR_PAGE.with(|cur_page| {
+            let page = cur_page.get();
+            if page < state.pages { cur_page.set(page + 1); }
+        }))
+        .draw(gl);
+
+    uic.label(&*buf.page)
+        .right_from(PREV_PAGE, 30.0)
+        .size(24)
+        .draw(gl);   
+        
+    const FILE_START_ID: u64 = 365;
     uic.widget_matrix(COLS, ROWS)
         .position(5.0, 35.0)
-        .dimensions(635.0, 440.0)
+        .dimensions(600.0, 400.0)
         .cell_padding(5.0, 5.0)
         .each_widget(|uic, num, _, _, pt, dimen| {
-            if num >= state.paths.len() { return; }
+            let idx = (state.cur_page - 1) * PER_PAGE + num;
+    
+            if idx >= state.paths.len() { return; }
 
-            let label = state.paths[num].filename_str().unwrap().into_string();
+            let label = state.paths[idx].filename_str().unwrap().into_string();
 
-            let button = uic.button(base_id + num as u64)
+            let button = uic.button(FILE_START_ID + num as u64)
                 .point(pt)
                 .dimensions(dimen[0], dimen[1]) 
-                .label(&*label).label_font_size(20);
+                .label(&*label).label_font_size(18);
 
                 if state.selected == Some(num) {
                     button.color(Color::new(0.5, 0.9, 0.5, 1.0))
                 } else { button }
                 .callback(|| state.select(num))
                 .draw(gl);                
-        });
+        });        
 }
 
 fn entries(path: &Path, keep_files: bool, filter_hidden: bool) -> IoResult<Vec<Path>> {
