@@ -42,6 +42,7 @@ pub struct FileDialog {
     select: SelectType,
     starting_path: Path,
     font: Font,
+    filter_hidden: bool,
 }
 
 macro_rules! setter(
@@ -64,6 +65,7 @@ impl FileDialog {
             // Possible panic! here, but unlikely.
             starting_path: os::homedir().unwrap_or_else(|| os::getcwd().unwrap()),
             font: font,
+            filter_hidden: true,
         }
     }
 
@@ -88,27 +90,31 @@ impl FileDialog {
     
     setter!(select: SelectType -> FileDialog)
 
-    setter!(starting_path: Path -> FileDialog) 
+    setter!(starting_path: Path -> FileDialog)
+    
+    setter!(filter_hidden: bool -> FileDialog) 
     
     // How should we format the trait bounds here?
     /// Show the dialog
     pub fn show<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W + Send>
     (self, win_fn: F, gl: OpenGL) -> FilePromise {
-        let (dialog, window) = self.explode();        
         let (promise, tx) = FilePromise::new();
+        let (dialog, window) = self.explode(tx);        
 
-        spawn(proc() render_file_dialog(dialog, window, gl, win_fn, tx));
+        spawn(proc() render_file_dialog(dialog, window, gl, win_fn));
          
         promise                            
     }
 
-    fn explode(self) -> (DialogSettings, WindowSettings) {
+    fn explode(self, tx: Sender<Path>) -> (DialogSettings, WindowSettings) {
         (
             DialogSettings {
                 background: self.background,
                 select: self.select,
                 starting_path: self.starting_path,
                 font: self.font,
+                tx: tx,
+                filter_hidden: self.filter_hidden,
             },
             WindowSettings {
                 title: self.title,
@@ -138,7 +144,7 @@ impl SelectType {
             SelectType::File | SelectType::SaveFile(_) => true,
             _ => false,
         }    
-    }    
+    }
 }
 
 struct DialogSettings {
@@ -146,6 +152,8 @@ struct DialogSettings {
     select: SelectType,
     starting_path: Path,
     font: Font,
+    tx: Sender<Path>,
+    filter_hidden: bool,
 }
 
 impl DialogSettings {
@@ -154,10 +162,14 @@ impl DialogSettings {
             DialogState {
                 dir: self.starting_path,
                 selected: None,
-                folders: Vec::new(),
-                files: Vec::new(),
+                paths: Vec::new(),
                 background: self.background,
-                select: self.select,             
+                select: self.select,
+                dir_changed: false,
+                pages: 0,
+                tx: self.tx,
+                sent: false,
+                filter_hidden: self.filter_hidden,
             },
             self.font,
         )
@@ -165,8 +177,9 @@ impl DialogSettings {
 }
 
 fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
-(dialog: DialogSettings, window: WindowSettings, gl: OpenGL, win_fn: F, tx: Sender<Path>) {
+(dialog: DialogSettings, window: WindowSettings, gl: OpenGL, win_fn: F) {
     let (mut state, font) = dialog.into_state();
+    state.update_paths();
 
     let ref mut state = state;
 
@@ -178,6 +191,8 @@ fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
     let ref mut buf = Default::default();
 
     for event in event_loop {
+        if state.sent { return; }
+
         uic.handle_event(&event);
         match event {
             Event::Render(args) => {
@@ -197,68 +212,126 @@ struct Buffers {
 
 struct DialogState {
     dir: Path,
-    selected: Option<Path>,
-    folders: Vec<Path>,
-    files: Vec<Path>,
+    selected: Option<uint>,
+    paths: Vec<Path>,
     background: Color,
     select: SelectType,
+    dir_changed: bool,
+    pages: uint,
+    tx: Sender<Path>,
+    sent: bool,
+    filter_hidden: bool,
 }
 
-
 impl DialogState {
-    fn update_path(&mut self, new_dir: &str) -> bool {
-        let path = Path::new(new_dir);
-
-        if path.is_dir() {
-            self.dir = path;
-
-            self.folders = list_folders(&self.dir).unwrap();
-            
-            if self.select.show_files() {
-                self.files = list_files(&self.dir).unwrap();
-            } else {
-                self.files = Vec::new();
-            }
-
+    fn update_dir(&mut self, new_dir: Path) {
+        self.dir_changed = if new_dir.is_dir() {
+            self.dir = new_dir;
+            self.update_paths();
             true
         } else {
             false
         }
     }
+
+    fn update_paths(&mut self) {
+        self.selected = None;
+        self.paths = entries(&self.dir, self.select.show_files(), self.filter_hidden).unwrap();
+
+        let count = self.paths.len();
+        let per_page = COLS * ROWS;
+        self.pages = count / per_page;
+
+        if count % per_page != 0 { self.pages += 1; }
+    }
+
+    fn up_dir(&mut self) {
+        self.dir_changed = self.dir.pop();
+        self.update_paths();
+    }
+
+    fn select(&mut self, num: uint) {
+        // Double-clicked
+        if self.selected == Some(num) {
+            let path = self.paths.remove(num).unwrap();
+            
+            if self.select.show_files() && !path.is_dir() {
+                self.tx.send(path);
+                self.sent = true;    
+            } else {
+                self.update_dir(path);
+            }            
+        } else {
+            self.selected = Some(num);
+        }        
+    }
 }
 
+const COLS: uint = 5;
+const ROWS: uint = 10;
 
 fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf: &mut Buffers) {
     uic.background().color(state.background).draw(gl);
 
-    if buf.dir.is_empty() {
-        state.dir.as_str().map(|s| buf.dir.push_str(s));
+    if state.dir_changed {
+        buf.dir.clear();
     }
 
-    uic.text_box(42, &mut buf.dir)
-        .font_size(24u32)
-        .dimensions(270.0, 30.0)
-        .callback(|new_dir: &mut String| {
-            if !state.update_path(&**new_dir) {
-                new_dir.clear(); 
-                state.dir.as_str().map(|s| new_dir.push_str(s));
-            }
-        })
-        .position(30.0, 30.0)
+    if buf.dir.is_empty() {
+        state.dir.as_str().map(|s| buf.dir.push_str(s));
+    }   
+        
+    let text_id = 42u64;
+
+    const BUTTON_ID: u64 = 78;
+    
+    uic.button(BUTTON_ID)
+        .dimensions(30.0, 30.0)
+        .position(605.0, 5.0)
+        .label("Up")
+        .callback(|| state.up_dir())
         .draw(gl);
+
+    uic.label(&*buf.dir)
+        .position(5.0, 5.0)
+        .size(24)
+        .draw(gl);
+    
+    let base_id = 96u64;
+
+    uic.widget_matrix(COLS, ROWS)
+        .position(5.0, 35.0)
+        .dimensions(635.0, 440.0)
+        .cell_padding(5.0, 5.0)
+        .each_widget(|uic, num, _, _, pt, dimen| {
+            if num >= state.paths.len() { return; }
+
+            let label = state.paths[num].filename_str().unwrap().into_string();
+
+            let button = uic.button(base_id + num as u64)
+                .point(pt)
+                .dimensions(dimen[0], dimen[1]) 
+                .label(&*label).label_font_size(20);
+
+                if state.selected == Some(num) {
+                    button.color(Color::new(0.5, 0.9, 0.5, 1.0))
+                } else { button }
+                .callback(|| state.select(num))
+                .draw(gl);                
+        });
 }
 
-fn list_folders(path: &Path) -> IoResult<Vec<Path>> {
+fn entries(path: &Path, keep_files: bool, filter_hidden: bool) -> IoResult<Vec<Path>> {
     let mut entries = try!(fs::readdir(path));
-    entries.retain(|file| file.is_dir());    
+    entries.retain(|file|
+        (filter_hidden && !file.filename_str().unwrap().starts_with(".")) &&
+        (keep_files || file.is_dir())
+    );
+    entries.sort();
+
     Ok(entries)
 } 
 
-fn list_files(path: &Path) -> IoResult<Vec<Path>> {
-    let mut entries = try!(fs::readdir(path));
-    entries.retain(|file| !file.is_dir());
-    Ok(entries)
-}
 
 pub struct FilePromise {
     opt: Option<Path>,
