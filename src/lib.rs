@@ -46,8 +46,8 @@ pub struct FileDialog {
 }
 
 macro_rules! setter(
-    ($field:ident: $ty:ty -> $ret:ident) => ( 
-        fn $field(mut self, $field: $ty) -> $ret {
+    (pub $fn_nm: ident, $field:ident: $ty:ty -> $ret:ident) => ( 
+        pub fn $fn_nm(mut self, $field: $ty) -> $ret {
             self.$field = $field;
             self
         }
@@ -84,15 +84,30 @@ impl FileDialog {
         self    
     }
 
-    setter!(samples: u8 -> FileDialog)
+    pub fn set_samples(mut self, samples: u8) -> FileDialog {
+        self.samples = samples;
+        self    
+    }
     
-    setter!(background: Color -> FileDialog)
+    pub fn set_background(mut self, background: Color) -> FileDialog {
+        self.background = background;
+        self
+    }
     
-    setter!(select: SelectType -> FileDialog)
+    pub fn set_select(mut self, select: SelectType) -> FileDialog {
+        self.select = select;
+        self
+    }
 
-    setter!(starting_path: Path -> FileDialog)
+    pub fn set_starting_path(mut self, starting_path: Path) -> FileDialog {
+        self.starting_path = starting_path;
+        self
+    }
     
-    setter!(filter_hidden: bool -> FileDialog) 
+    pub fn set_filter_hidden(mut self, filter_hidden: bool) -> FileDialog {
+        self.filter_hidden = filter_hidden;
+        self
+    }
     
     // How should we format the trait bounds here?
     /// Show the dialog
@@ -128,6 +143,7 @@ impl FileDialog {
 }
 
 /// An enum describing the file selection behavior.
+#[deriving(PartialEq, Eq)]
 pub enum SelectType {
     /// User must select an existing file on the filesystem.
     File,
@@ -189,7 +205,11 @@ fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
     let mut gl = Gl::new(gl);
     
     let ref mut uic = UiContext::new(font, Theme::default());
-    let ref mut buf = Default::default();
+    let ref mut buf: Buffers = Default::default();
+
+    if let SelectType::SaveFile(ref mut opt_file) = state.select {
+        opt_file.take().map(|s: String| buf.filename = s);    
+    }
 
     for event in event_loop {
         if state.exit { break; }
@@ -209,7 +229,8 @@ fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
 #[deriving(Default)]
 struct Buffers {
     dir: String,
-    page: String,   
+    page: String,
+    filename: String,
 }
 
 impl Buffers {
@@ -274,6 +295,11 @@ impl DialogState {
             self.selected = Some(num);
         }        
     }
+
+    fn save(&mut self, filename: &str) {
+        self.tx.send(self.dir.join(filename));
+        self.exit = true;    
+    }
 }
 
 const COLS: uint = 5;
@@ -306,9 +332,9 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
     thread_local!(static CUR_PAGE: Cell<uint> = Cell::new(1))
 
               
-    const BUTTON_ID: u64 = 78;
+    const UP_DIR: u64 = 78;
     
-    uic.button(BUTTON_ID)
+    uic.button(UP_DIR)
         .position(605.0, 5.0)
         .dimensions(30.0, 30.0)
         .label("Up")
@@ -332,7 +358,9 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
         }))
         .draw(gl);
 
-    uic.button(PREV_PAGE + 1)
+    const NEXT_PAGE: u64 = PREV_PAGE + 1;
+
+    uic.button(NEXT_PAGE)
         .right_from(PREV_PAGE, 125.0)
         .dimensions(90.0, 30.0)
         .label("Next")
@@ -370,7 +398,57 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
                 } else { button }
                 .callback(|| state.select(idx))
                 .draw(gl);                
-        });      
+        });
+        
+    const CANCEL: u64 = 205;
+    const CONFIRM: u64 = 206;
+
+    uic.button(CANCEL)
+        .right_from(NEXT_PAGE, 150.0)
+        .dimensions(90.0, 30.0)
+        .callback(|| state.exit = true)
+        .label("Cancel")
+        .draw(gl);
+
+    {
+        let confirm = uic.button(CONFIRM)
+            .right_from(CANCEL, 5.0)
+            .dimensions(90.0, 30.0);
+
+        if let Some(idx) = state.selected {
+            confirm.label(match state.select {
+                    SelectType::SaveFile(_) if !state.paths[idx].is_dir() => "Save",
+                    _ => "Open",
+                })
+                .callback(|| state.select(idx))
+                .draw(gl);                
+        } else if state.select == SelectType::Folder {
+            confirm.label("Select Folder")
+                .callback(|| {
+                    state.tx.send(state.dir.clone()); 
+                    state.exit = true
+                })
+                .draw(gl);
+        } else if let SelectType::SaveFile(_) = state.select {
+            let confirm = confirm.label("Save");
+
+            if !buf.filename.is_empty() {
+                confirm.callback(|| state.save(&*buf.filename))
+            } else {
+                confirm
+            }.draw(gl);
+        } else {
+            confirm.label("Open").draw(gl);
+        }
+    }
+
+    const FILENAME: u64 = 210;
+    if let SelectType::SaveFile(_) = state.select {
+        uic.text_box(FILENAME, &mut buf.filename)
+            .right_from(NEXT_PAGE, 5.0)
+            .dimensions(140.0, 30.0)
+            .draw(gl);
+    }
 }
 
 fn entries(path: &Path, keep_files: bool, filter_hidden: bool) -> IoResult<Vec<Path>> {
