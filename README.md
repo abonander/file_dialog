@@ -9,3 +9,15 @@ See `examples/file_chooser.rs` for how to invoke the dialog.
 
 
 While `file_dialog` is polymorphic over different `Window` implementations, `GlfwWindow` is currently not very useful as it cannot open more than one window at a time. The example had to be changed to use `Sdl2Window` for this reason.
+
+###TODO
+* Add documentation comments
+* RustCI and TravisCI integration
+* Improve examples
+    * Find better font
+    * Add folder selection example
+* Improve dialog design
+    * Fix alignments
+    * Make positioning smarter
+    * Support custom resolutions/themes
+* Make `FilePromise` safer (non-panicking)
