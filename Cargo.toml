@@ -7,5 +7,5 @@ authors = ["Austin Bonander <austin.bonander@gmail.com>"]
 [dependencies.conrod]
 git = "https://github.com/PistonDevelopers/conrod"
 
-[dev_dependencies.glfw_window]
-git = "https://github.com/PistonDevelopers/glfw_window"
+[dev_dependencies.sdl2_window]
+git = "https://github.com/PistonDevelopers/sdl2_window"
