@@ -21,3 +21,15 @@ While `file_dialog` is polymorphic over different `Window` implementations, `Glf
     * Make positioning smarter
     * Support custom resolutions/themes
 * Make `FilePromise` safer (non-panicking)
+
+Screenshots
+===========
+It's not pretty, but it works and that's all that matters. Design can be fixed later.
+####Selecting File
+![][select-file]
+
+####Saving File
+![][saving-file]
+
+[select-file]: http://i.imgur.com/YYlAMbn.png
+[saving-file]: http://i.imgur.com/SZekC2Y.png
