@@ -32,8 +32,6 @@ use std::io::IoResult;
 
 use std::os;
 
-use std::cell::Cell;
-
 pub struct FileDialog {
     title: String,
     dimen: [u32, ..2],
@@ -181,7 +179,7 @@ impl DialogSettings {
                 paths: Vec::new(),
                 background: self.background,
                 select: self.select,
-                dir_changed: false,
+                dir_changed: true,
                 pages: 0,
                 cur_page: 0,
                 tx: self.tx,
@@ -226,17 +224,40 @@ fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
     }
 }
 
+/// Like format! except writes to an existing string.
+macro_rules! write_str(
+    ($s:expr, $fmt:expr, $($arg:expr),+) => (
+        {
+            let vec = unsafe { $s.as_mut_vec() };
+            // Should always be `Ok(())` unless something went wrong.
+            (write!(vec, $fmt, $($arg),+)).unwrap();
+        }    
+    )
+)
+
 #[deriving(Default)]
 struct Buffers {
     dir: String,
     page: String,
     filename: String,
+    selected: String,
 }
 
 impl Buffers {
     fn set_page(&mut self, page: uint, total: uint) {
-        self.page = format!("Page: {} Total: {}", page, total);    
-    }    
+        self.page.clear();
+        write_str!(self.page, "Page: {} Total: {}", page, total);    
+    }
+
+    fn set_selected(&mut self, selected: &Path) {
+        self.selected.clear();
+        write_str!(self.selected, "Selected: {}", selected.filename_display());
+    }
+
+    fn set_dir(&mut self, dir: &Path) {
+        self.dir.clear();
+        write_str!(self.dir, "{}", dir.display());
+    }
 }
 
 struct DialogState {
@@ -280,7 +301,7 @@ impl DialogState {
         self.update_paths();
     }
 
-    fn select(&mut self, num: uint) {
+    fn select(&mut self, num: uint, buf: &mut Buffers) {
         // Double-clicked
         if self.selected == Some(num) {
             let path = self.paths.remove(num).unwrap();
@@ -293,12 +314,27 @@ impl DialogState {
             }            
         } else {
             self.selected = Some(num);
+            buf.set_selected(&self.paths[num]);
         }        
     }
 
     fn save(&mut self, filename: &str) {
         self.tx.send(self.dir.join(filename));
         self.exit = true;    
+    }
+
+    fn next_page(&mut self, buf: &mut Buffers) {
+        if self.cur_page < self.pages { 
+            self.cur_page += 1;
+            buf.set_page(self.cur_page, self.pages);
+        } 
+    }
+
+    fn prev_page(&mut self, buf: &mut Buffers) {
+        if self.cur_page > 1 { 
+            self.cur_page -= 1;
+            buf.set_page(self.cur_page, self.pages);
+        }    
     }
 }
 
@@ -309,29 +345,13 @@ const CHAR_LIMIT: uint = 24;
 
 fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf: &mut Buffers) {
     uic.background().color(state.background).draw(gl);
-
-    CUR_PAGE.with(|cur_page| {
-        let page = cur_page.get();
-        if page != state.cur_page { 
-            state.cur_page = page;
-            buf.set_page(state.cur_page, state.pages);
-        }
-    });
-
+ 
     if state.dir_changed {
-        buf.dir.clear();
+        buf.set_dir(&state.dir);
         buf.set_page(state.cur_page, state.pages);
         state.dir_changed = false;
     }
-
-    if buf.dir.is_empty() {
-        state.dir.as_str().map(|s| buf.dir.push_str(s));
-        buf.set_page(state.cur_page, state.pages);
-    }
-
-    thread_local!(static CUR_PAGE: Cell<uint> = Cell::new(1))
-
-              
+                  
     const UP_DIR: u64 = 78;
     
     uic.button(UP_DIR)
@@ -352,10 +372,7 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
         .position(5.0, 445.0)
         .dimensions(90.0, 30.0)
         .label("Previous")
-        .callback(|| CUR_PAGE.with(|cur_page| {
-            let page = cur_page.get();
-            if page > 1 { cur_page.set(page - 1); }
-        }))
+        .callback(|| state.prev_page(buf))
         .draw(gl);
 
     const NEXT_PAGE: u64 = PREV_PAGE + 1;
@@ -364,10 +381,7 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
         .right_from(PREV_PAGE, 125.0)
         .dimensions(90.0, 30.0)
         .label("Next")
-        .callback(|| CUR_PAGE.with(|cur_page| {
-            let page = cur_page.get();
-            if page < state.pages { cur_page.set(page + 1); }
-        }))
+        .callback(|| state.next_page(buf))
         .draw(gl);
 
     uic.label(&*buf.page)
@@ -382,7 +396,7 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
         .cell_padding(5.0, 5.0)
         .each_widget(|uic, _, x, y, pt, dimen| {
             use std::cmp;
-            let idx = y * COLS + x;
+            let idx = (y * COLS * state.cur_page) + x;
     
             if idx >= state.paths.len() { return; }
 
@@ -396,7 +410,7 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
                 if state.selected == Some(idx) {
                     button.color(Color::new(0.5, 0.9, 0.5, 1.0))
                 } else { button }
-                .callback(|| state.select(idx))
+                .callback(|| state.select(idx, buf))
                 .draw(gl);                
         });
         
@@ -404,7 +418,7 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
     const CONFIRM: u64 = 206;
 
     uic.button(CANCEL)
-        .right_from(NEXT_PAGE, 150.0)
+        .right_from(NEXT_PAGE, 140.0)
         .dimensions(90.0, 30.0)
         .callback(|| state.exit = true)
         .label("Cancel")
@@ -420,7 +434,7 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
                     SelectType::SaveFile(_) if !state.paths[idx].is_dir() => "Save",
                     _ => "Open",
                 })
-                .callback(|| state.select(idx))
+                .callback(|| state.select(idx, buf))
                 .draw(gl);                
         } else if state.select == SelectType::Folder {
             confirm.label("Select Folder")
@@ -446,8 +460,13 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
     if let SelectType::SaveFile(_) = state.select {
         uic.text_box(FILENAME, &mut buf.filename)
             .right_from(NEXT_PAGE, 5.0)
-            .dimensions(140.0, 30.0)
+            .dimensions(130.0, 30.0)
             .draw(gl);
+    } else if let Some(_) = state.selected {
+        uic.label(&*buf.selected)
+            .right_from(NEXT_PAGE, 5.0)
+            .size(18)
+            .draw(gl);  
     }
 }
 
@@ -460,8 +479,7 @@ fn entries(path: &Path, keep_files: bool, filter_hidden: bool) -> IoResult<Vec<P
     entries.sort();
 
     Ok(entries)
-} 
-
+}
 
 pub struct FilePromise {
     opt: Option<Path>,
