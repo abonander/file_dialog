@@ -481,39 +481,72 @@ fn entries(path: &Path, keep_files: bool, filter_hidden: bool) -> IoResult<Vec<P
     Ok(entries)
 }
 
+#[deriving(PartialEq)]
+pub enum FileStatus {
+    Selected(Path),
+    Canceled,
+    Waiting,    
+}
+
+impl FileStatus {
+    pub fn to_opt(self) -> Option<Path> {
+        match self {
+            FileStatus::Selected(path) => Some(path),
+            _ => None,
+        }
+    }
+    
+    pub fn opt_ref(&self) -> Option<&Path> {
+        match *self {
+            FileStatus::Selected(ref path) => Some(path),
+            _ => None,
+        }
+    }
+
+    pub fn unwrap(self) -> Path {
+        self.to_opt().expect("File selection was canceled!")    
+    } 
+}
+
 pub struct FilePromise {
-    opt: Option<Path>,
+    status: FileStatus,
     rx: Receiver<Path>,
 }
 
 impl FilePromise {
-    pub fn new() -> (FilePromise, Sender<Path>) {
+    fn new() -> (FilePromise, Sender<Path>) {
         let (tx, rx) = channel();
 
         (
             FilePromise {
-                opt: None,
+                status: FileStatus::Waiting,
                 rx: rx,
             }, 
             tx,
         )            
     }    
     
-    pub fn poll(&mut self) -> Option<&Path> {
-        match self.rx.try_recv() {
-            Ok(val) => self.opt = Some(val),
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) if self.opt.is_none() => 
-                panic!("Promised value never received; processing task ended prematurely!"),
-            _ => (),
+    /// Poll this promise for its status.
+    pub fn poll(&mut self) -> &FileStatus {
+        if self.status == FileStatus::Waiting {
+            self.status = match self.rx.try_recv() {
+                Ok(val) => FileStatus::Selected(val),
+                Err(TryRecvError::Disconnected) if self.status == FileStatus::Waiting => 
+                    FileStatus::Canceled,
+                _ => FileStatus::Waiting,
+            }
         }                         
 
-        self.opt.as_ref()
+        &self.status
     }
     
-    pub fn unwrap(mut self) -> Path {
-        while self.poll().is_none() {} 
+    pub fn wait(mut self) -> FileStatus {
+        while self.poll() == &FileStatus::Waiting {} 
         
-        self.opt.unwrap()   
-    } 
+        self.status 
+    }
+
+    pub fn unwrap(self) -> Path {
+        self.wait().unwrap()    
+    }
 }
