@@ -114,7 +114,7 @@ impl FileDialog {
         let (promise, tx) = FilePromise::new();
         let (dialog, window) = self.explode(tx);        
 
-        spawn(proc() render_file_dialog(dialog, window, gl, win_fn));
+        spawn(move || render_file_dialog(dialog, window, gl, win_fn));
          
         promise                            
     }
