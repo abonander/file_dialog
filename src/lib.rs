@@ -12,24 +12,18 @@ extern crate current;
 use conrod::*;
 
 use current::Set;
-
 use event::Event;
 use event_loop::{Events, Ups, MaxFps};
-
 use opengl_graphics::Gl;
 use opengl_graphics::glyph_cache::GlyphCache as Font;
-
 use shader_version::opengl::OpenGL;
-
 use window::{Window, WindowSettings};
 
-use std::comm::TryRecvError;
-
+use std::borrow::ToOwned;
 use std::default::Default;
-
 use std::io::fs::{mod, PathExtensions};
 use std::io::IoResult;
-
+use std::thread::{Thread, JoinGuard};
 use std::os;
 
 pub struct FileDialog {
@@ -43,19 +37,10 @@ pub struct FileDialog {
     filter_hidden: bool,
 }
 
-macro_rules! setter(
-    (pub $fn_nm: ident, $field:ident: $ty:ty -> $ret:ident) => ( 
-        pub fn $fn_nm(mut self, $field: $ty) -> $ret {
-            self.$field = $field;
-            self
-        }
-    );
-)
-
 impl FileDialog {
-    pub fn new<S: StrAllocating>(title: S, font: Font) -> FileDialog {
+    pub fn new<'a, S: IntoCow<'a, String, str>>(title: S, font: Font) -> FileDialog {
         FileDialog {
-            title: title.into_string(),
+            title: title.into_cow().into_owned(),
             dimen: [640, 480],
             samples: 4,
             background: Color::new(0.9, 0.9, 0.9, 1.0), // Should be a nice light-grey
@@ -110,33 +95,24 @@ impl FileDialog {
     // How should we format the trait bounds here?
     /// Show the dialog
     pub fn show<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W + Send>
-    (self, win_fn: F, gl: OpenGL) -> FilePromise {
-        let (promise, tx) = FilePromise::new();
-        let (dialog, window) = self.explode(tx);        
+    (self, win_fn: F, gl: OpenGL) -> JoinGuard<Option<Path>> {
+        let dialog = DialogSettings {
+            background: self.background,
+            select: self.select,
+            starting_path: self.starting_path,
+            font: self.font,
+            filter_hidden: self.filter_hidden,
+        };
 
-        spawn(move || render_file_dialog(dialog, window, gl, win_fn));
-         
-        promise                            
-    }
+        let window =  WindowSettings {
+            title: self.title,
+            size: self.dimen,
+            samples: self.samples,
+            fullscreen: false,
+            exit_on_esc: true,
+        };         
 
-    fn explode(self, tx: Sender<Path>) -> (DialogSettings, WindowSettings) {
-        (
-            DialogSettings {
-                background: self.background,
-                select: self.select,
-                starting_path: self.starting_path,
-                font: self.font,
-                tx: tx,
-                filter_hidden: self.filter_hidden,
-            },
-            WindowSettings {
-                title: self.title,
-                size: self.dimen,
-                samples: self.samples,
-                fullscreen: false,
-                exit_on_esc: true,
-            }
-        )    
+        Thread::spawn(move || render_file_dialog(dialog, window, gl, win_fn))       
     }
 }
 
@@ -166,7 +142,6 @@ struct DialogSettings {
     select: SelectType,
     starting_path: Path,
     font: Font,
-    tx: Sender<Path>,
     filter_hidden: bool,
 }
 
@@ -176,14 +151,14 @@ impl DialogSettings {
             DialogState {
                 dir: self.starting_path,
                 selected: None,
+                result: None,
+                exit: false,
                 paths: Vec::new(),
                 background: self.background,
                 select: self.select,
                 dir_changed: true,
                 pages: 0,
                 cur_page: 0,
-                tx: self.tx,
-                exit: false,
                 filter_hidden: self.filter_hidden,
             },
             self.font,
@@ -192,11 +167,9 @@ impl DialogSettings {
 }
 
 fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
-(dialog: DialogSettings, window: WindowSettings, gl: OpenGL, win_fn: F) {
+(dialog: DialogSettings, window: WindowSettings, gl: OpenGL, win_fn: F) -> Option<Path> {
     let (mut state, font) = dialog.into_state();
     state.update_paths();
-
-    let ref mut state = state;
 
     let window = win_fn(gl, window);
     let mut event_loop = Events::new(window).set(Ups(120)).set(MaxFps(60));
@@ -216,12 +189,14 @@ fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
         match event {
             Event::Render(args) => {
                 gl.draw([0, 0, args.width as i32, args.height as i32], |_, gl| {
-                    draw_dialog_ui(gl, uic, state, buf);
+                    draw_dialog_ui(gl, uic, &mut state, buf);
                 });
             },
             _ => {}    
         }
     }
+
+    state.result
 }
 
 /// Like format! except writes to an existing string.
@@ -233,7 +208,7 @@ macro_rules! write_str(
             (write!(vec, $fmt, $($arg),+)).unwrap();
         }    
     )
-)
+);
 
 #[deriving(Default)]
 struct Buffers {
@@ -263,14 +238,14 @@ impl Buffers {
 struct DialogState {
     dir: Path,
     selected: Option<uint>,
+    result: Option<Path>,
+    exit: bool,
     paths: Vec<Path>,
     background: Color,
     select: SelectType,
     dir_changed: bool,
     pages: uint,
     cur_page: uint,
-    tx: Sender<Path>,
-    exit: bool,
     filter_hidden: bool,
 }
 
@@ -307,8 +282,8 @@ impl DialogState {
             let path = self.paths.remove(num).unwrap();
             
             if self.select.show_files() && !path.is_dir() {
-                self.tx.send(path);
-                self.exit = true;    
+                self.result = Some(path);
+                self.exit = true;   
             } else {
                 self.update_dir(path);
             }            
@@ -319,7 +294,7 @@ impl DialogState {
     }
 
     fn save(&mut self, filename: &str) {
-        self.tx.send(self.dir.join(filename));
+        self.result = Some(self.dir.join(filename));
         self.exit = true;    
     }
 
@@ -400,7 +375,7 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
     
             if idx >= state.paths.len() { return; }
 
-            let label = state.paths[idx].filename_str().unwrap().into_string();
+            let label = state.paths[idx].filename_str().unwrap().to_owned();
 
             let button = uic.button(FILE_START_ID + idx as u64)
                 .point(pt)
@@ -439,7 +414,7 @@ fn draw_dialog_ui(gl: &mut Gl, uic: &mut UiContext, state: &mut DialogState, buf
         } else if state.select == SelectType::Folder {
             confirm.label("Select Folder")
                 .callback(|| {
-                    state.tx.send(state.dir.clone()); 
+                    state.result = Some(state.dir.clone()); 
                     state.exit = true
                 })
                 .draw(gl);
@@ -481,72 +456,3 @@ fn entries(path: &Path, keep_files: bool, filter_hidden: bool) -> IoResult<Vec<P
     Ok(entries)
 }
 
-#[deriving(PartialEq)]
-pub enum FileStatus {
-    Selected(Path),
-    Canceled,
-    Waiting,    
-}
-
-impl FileStatus {
-    pub fn to_opt(self) -> Option<Path> {
-        match self {
-            FileStatus::Selected(path) => Some(path),
-            _ => None,
-        }
-    }
-    
-    pub fn opt_ref(&self) -> Option<&Path> {
-        match *self {
-            FileStatus::Selected(ref path) => Some(path),
-            _ => None,
-        }
-    }
-
-    pub fn unwrap(self) -> Path {
-        self.to_opt().expect("File selection was canceled!")    
-    } 
-}
-
-pub struct FilePromise {
-    status: FileStatus,
-    rx: Receiver<Path>,
-}
-
-impl FilePromise {
-    fn new() -> (FilePromise, Sender<Path>) {
-        let (tx, rx) = channel();
-
-        (
-            FilePromise {
-                status: FileStatus::Waiting,
-                rx: rx,
-            }, 
-            tx,
-        )            
-    }    
-    
-    /// Poll this promise for its status.
-    pub fn poll(&mut self) -> &FileStatus {
-        if self.status == FileStatus::Waiting {
-            self.status = match self.rx.try_recv() {
-                Ok(val) => FileStatus::Selected(val),
-                Err(TryRecvError::Disconnected) if self.status == FileStatus::Waiting => 
-                    FileStatus::Canceled,
-                _ => FileStatus::Waiting,
-            }
-        }                         
-
-        &self.status
-    }
-    
-    pub fn wait(mut self) -> FileStatus {
-        while self.poll() == &FileStatus::Waiting {} 
-        
-        self.status 
-    }
-
-    pub fn unwrap(self) -> Path {
-        self.wait().unwrap()    
-    }
-}
