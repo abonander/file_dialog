@@ -8,6 +8,7 @@ extern crate graphics;
 extern crate window;
 extern crate opengl_graphics;
 extern crate current;
+extern crate sdl2_window;
 
 use conrod::*;
 
@@ -17,7 +18,8 @@ use event_loop::{Events, Ups, MaxFps};
 use opengl_graphics::Gl;
 use opengl_graphics::glyph_cache::GlyphCache as Font;
 use shader_version::opengl::OpenGL;
-use window::{Window, WindowSettings};
+use sdl2_window::Sdl2Window;
+use window::WindowSettings;
 
 use std::borrow::ToOwned;
 use std::default::Default;
@@ -94,8 +96,7 @@ impl FileDialog {
     
     // How should we format the trait bounds here?
     /// Show the dialog
-    pub fn show<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W + Send>
-    (self, win_fn: F, gl: OpenGL) -> JoinGuard<Option<Path>> {
+    pub fn show(self, gl: OpenGL) -> JoinGuard<Option<Path>> {
         let dialog = DialogSettings {
             background: self.background,
             select: self.select,
@@ -112,7 +113,7 @@ impl FileDialog {
             exit_on_esc: true,
         };         
 
-        Thread::spawn(move || render_file_dialog(dialog, window, gl, win_fn))       
+        Thread::spawn(move || render_file_dialog(dialog, window, gl))       
     }
 }
 
@@ -166,12 +167,11 @@ impl DialogSettings {
     }    
 }
 
-fn render_file_dialog<W: Window, F: FnOnce(OpenGL, WindowSettings) -> W>
-(dialog: DialogSettings, window: WindowSettings, gl: OpenGL, win_fn: F) -> Option<Path> {
+fn render_file_dialog(dialog: DialogSettings, window: WindowSettings, gl: OpenGL) -> Option<Path> {
     let (mut state, font) = dialog.into_state();
     state.update_paths();
 
-    let window = win_fn(gl, window);
+    let window = Sdl2Window::new(gl, window);
     let mut event_loop = Events::new(window).set(Ups(120)).set(MaxFps(60));
     let mut gl = Gl::new(gl);
     
