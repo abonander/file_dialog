@@ -97,25 +97,30 @@ impl FileDialog {
     // How should we format the trait bounds here?
     /// Show the dialog
     pub fn show(self, gl: OpenGL) -> JoinGuard<Option<Path>> {
-        let dialog = DialogSettings {
-            background: self.background,
-            select: self.select,
-            starting_path: self.starting_path,
-            font: self.font,
-            filter_hidden: self.filter_hidden,
-        };
+        
+        Thread::spawn(move || {
+            let dialog = DialogSettings {
+                background: self.background,
+                select: self.select,
+                starting_path: self.starting_path,
+                font: self.font,
+                filter_hidden: self.filter_hidden,
+            };
 
-        let window =  WindowSettings {
-            title: self.title,
-            size: self.dimen,
-            samples: self.samples,
-            fullscreen: false,
-            exit_on_esc: true,
-        };         
+            let window =  WindowSettings {
+                title: self.title,
+                size: self.dimen,
+                samples: self.samples,
+                fullscreen: false,
+                exit_on_esc: true,
+            };         
 
-        Thread::spawn(move || render_file_dialog(dialog, window, gl))       
+            render_file_dialog(dialog, window, gl)            
+        })       
     }
 }
+
+unsafe impl Send for FileDialog {}
 
 /// An enum describing the file selection behavior.
 #[deriving(PartialEq, Eq)]
