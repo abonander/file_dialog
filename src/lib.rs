@@ -16,7 +16,7 @@ use current::Set;
 use event::Event;
 use event_loop::{Events, Ups, MaxFps};
 use opengl_graphics::Gl;
-use opengl_graphics::glyph_cache::GlyphCache as Font;
+use opengl_graphics::glyph_cache::GlyphCache;
 use shader_version::opengl::OpenGL;
 use sdl2_window::Sdl2Window;
 use window::WindowSettings;
@@ -35,12 +35,12 @@ pub struct FileDialog {
     background: Color,
     select: SelectType,
     starting_path: Path,
-    font: Font,
+    font: Path,
     filter_hidden: bool,
 }
 
 impl FileDialog {
-    pub fn new<'a, S: IntoCow<'a, String, str>>(title: S, font: Font) -> FileDialog {
+    pub fn new<'a, S: IntoCow<'a, String, str>>(title: S, font: Path) -> FileDialog {
         FileDialog {
             title: title.into_cow().into_owned(),
             dimen: [640, 480],
@@ -103,7 +103,7 @@ impl FileDialog {
                 background: self.background,
                 select: self.select,
                 starting_path: self.starting_path,
-                font: self.font,
+                font: GlyphCache::new(&self.font).unwrap(),
                 filter_hidden: self.filter_hidden,
             };
 
@@ -147,12 +147,12 @@ struct DialogSettings {
     background: Color,
     select: SelectType,
     starting_path: Path,
-    font: Font,
+    font: GlyphCache,
     filter_hidden: bool,
 }
 
 impl DialogSettings {
-    fn into_state(self) -> (DialogState, Font) {
+    fn into_state(self) -> (DialogState, GlyphCache) {
         (
             DialogState {
                 dir: self.starting_path,
@@ -284,7 +284,7 @@ impl DialogState {
     fn select(&mut self, num: uint, buf: &mut Buffers) {
         // Double-clicked
         if self.selected == Some(num) {
-            let path = self.paths.remove(num).unwrap();
+            let path = self.paths.remove(num);
             
             if self.select.show_files() && !path.is_dir() {
                 self.result = Some(path);

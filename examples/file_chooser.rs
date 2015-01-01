@@ -3,7 +3,6 @@ extern crate opengl_graphics;
 
 use file_dialog::{FileDialog, SelectType};
 use opengl_graphics::OpenGL;
-use opengl_graphics::glyph_cache::GlyphCache as Font;
 
 use std::borrow::ToOwned;
 
@@ -24,6 +23,6 @@ fn main() {
     }
 }
 
-fn font() -> Font {
-    Font::new(&Path::new("./assets/Dense-Regular.otf")).unwrap()
+fn font() -> Path {
+    Path::new("./assets/Dense-Regular.otf")
 }
