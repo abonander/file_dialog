@@ -7,12 +7,12 @@ extern crate conrod;
 extern crate graphics;
 extern crate window;
 extern crate opengl_graphics;
-extern crate current;
+extern crate quack;
 extern crate sdl2_window;
 
 use conrod::*;
 
-use current::Set;
+use quack::Set;
 use event::Event;
 use event_loop::{Events, Ups, MaxFps};
 use opengl_graphics::Gl;
